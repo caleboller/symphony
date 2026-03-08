@@ -40,6 +40,13 @@ defmodule SymphonyElixir.Linear.Client do
               state {
                 name
               }
+              branchName
+              attachments {
+                nodes {
+                  url
+                  title
+                }
+              }
             }
           }
         }
@@ -84,6 +91,13 @@ defmodule SymphonyElixir.Linear.Client do
               identifier
               state {
                 name
+              }
+              branchName
+              attachments {
+                nodes {
+                  url
+                  title
+                }
               }
             }
           }
@@ -491,6 +505,23 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp extract_labels(_), do: []
 
+  defp extract_first_pr_url(%{"attachments" => %{"nodes" => attachments}}) when is_list(attachments) do
+    attachments
+    |> Enum.find_value(fn attachment ->
+      case attachment["url"] do
+        url when is_binary(url) ->
+          if String.contains?(url, "github.com") and String.contains?(url, "/pull/") do
+            url
+          else
+            nil
+          end
+        _ -> nil
+      end
+    end)
+  end
+
+  defp extract_first_pr_url(_), do: nil
+
   defp extract_blockers(%{"inverseRelations" => %{"nodes" => inverse_relations}})
        when is_list(inverse_relations) do
     inverse_relations
@@ -502,7 +533,9 @@ defmodule SymphonyElixir.Linear.Client do
             %{
               id: blocker_issue["id"],
               identifier: blocker_issue["identifier"],
-              state: get_in(blocker_issue, ["state", "name"])
+              state: get_in(blocker_issue, ["state", "name"]),
+              branch_name: blocker_issue["branchName"],
+              pr_url: extract_first_pr_url(blocker_issue)
             }
           ]
         else

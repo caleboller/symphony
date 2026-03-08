@@ -30,6 +30,7 @@ defmodule SymphonyElixir.Linear.Issue do
           branch_name: String.t() | nil,
           url: String.t() | nil,
           assignee_id: String.t() | nil,
+          blocked_by: [%{id: String.t(), identifier: String.t(), state: String.t(), branch_name: String.t() | nil, pr_url: String.t() | nil}],
           labels: [String.t()],
           assigned_to_worker: boolean(),
           created_at: DateTime.t() | nil,
