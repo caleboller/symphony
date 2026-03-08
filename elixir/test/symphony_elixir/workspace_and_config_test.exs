@@ -290,7 +290,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
             "issue" => %{
               "id" => "issue-2",
               "identifier" => "MT-2",
-              "state" => %{"name" => "In Progress"}
+              "state" => %{"name" => "In Progress"},
+              "branchName" => "mt-2-feature",
+              "attachments" => %{
+                "nodes" => [
+                  %{"url" => "https://github.com/openai/symphony/pull/42", "title" => "PR: Add dependency support"}
+                ]
+              }
             }
           },
           %{
@@ -309,12 +315,123 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     issue = Client.normalize_issue_for_test(raw_issue, "user-1")
 
-    assert issue.blocked_by == [%{id: "issue-2", identifier: "MT-2", state: "In Progress"}]
+    assert issue.blocked_by == [%{id: "issue-2", identifier: "MT-2", state: "In Progress", branch_name: "mt-2-feature", pr_url: "https://github.com/openai/symphony/pull/42"}]
     assert issue.labels == ["backend"]
     assert issue.priority == 2
     assert issue.state == "Todo"
     assert issue.assignee_id == "user-1"
     assert issue.assigned_to_worker
+  end
+
+  test "linear client handles blockers without branch info for backward compatibility" do
+    raw_issue = %{
+      "id" => "issue-1",
+      "identifier" => "MT-1",
+      "title" => "Legacy blocker format",
+      "state" => %{"name" => "Todo"},
+      "inverseRelations" => %{
+        "nodes" => [
+          %{
+            "type" => "blocks",
+            "issue" => %{
+              "id" => "issue-legacy",
+              "identifier" => "MT-LEGACY",
+              "state" => %{"name" => "Done"}
+              # Missing branchName and attachments
+            }
+          }
+        ]
+      }
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue, nil)
+
+    assert issue.blocked_by == [%{id: "issue-legacy", identifier: "MT-LEGACY", state: "Done", branch_name: nil, pr_url: nil}]
+  end
+
+  test "linear client extracts PR URLs from various attachment scenarios" do
+    # Test with GitHub PR URL
+    issue_with_github_pr = %{
+      "id" => "issue-1",
+      "identifier" => "MT-1",
+      "state" => %{"name" => "Todo"},
+      "inverseRelations" => %{
+        "nodes" => [
+          %{
+            "type" => "blocks",
+            "issue" => %{
+              "id" => "issue-2",
+              "identifier" => "MT-2",
+              "state" => %{"name" => "In Progress"},
+              "attachments" => %{
+                "nodes" => [
+                  %{"url" => "https://linear.app/link", "title" => "Linear link"},
+                  %{"url" => "https://github.com/org/repo/pull/123", "title" => "PR"},
+                  %{"url" => "https://docs.google.com/doc", "title" => "Doc"}
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+
+    issue = Client.normalize_issue_for_test(issue_with_github_pr, nil)
+    assert [blocker] = issue.blocked_by
+    assert blocker.pr_url == "https://github.com/org/repo/pull/123"
+
+    # Test with no PR URL (non-GitHub URLs)
+    issue_without_pr = %{
+      "id" => "issue-3",
+      "identifier" => "MT-3",
+      "state" => %{"name" => "Todo"},
+      "inverseRelations" => %{
+        "nodes" => [
+          %{
+            "type" => "blocks",
+            "issue" => %{
+              "id" => "issue-4",
+              "identifier" => "MT-4",
+              "state" => %{"name" => "Done"},
+              "attachments" => %{
+                "nodes" => [
+                  %{"url" => "https://linear.app/link", "title" => "Linear link"},
+                  %{"url" => "https://docs.google.com/doc", "title" => "Doc"}
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+
+    issue2 = Client.normalize_issue_for_test(issue_without_pr, nil)
+    assert [blocker2] = issue2.blocked_by
+    assert blocker2.pr_url == nil
+
+    # Test with empty attachments
+    issue_empty_attachments = %{
+      "id" => "issue-5",
+      "identifier" => "MT-5",
+      "state" => %{"name" => "Todo"},
+      "inverseRelations" => %{
+        "nodes" => [
+          %{
+            "type" => "blocks",
+            "issue" => %{
+              "id" => "issue-6",
+              "identifier" => "MT-6",
+              "state" => %{"name" => "Done"},
+              "attachments" => %{"nodes" => []}
+            }
+          }
+        ]
+      }
+    }
+
+    issue3 = Client.normalize_issue_for_test(issue_empty_attachments, nil)
+    assert [blocker3] = issue3.blocked_by
+    assert blocker3.pr_url == nil
   end
 
   test "linear client marks explicitly unassigned issues as not routed to worker" do
@@ -797,6 +914,32 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server")
     assert Config.codex_command() == "codex app-server"
+  end
+
+  test "config reads claude_code defaults and validates agent kind" do
+    write_workflow_file!(Workflow.workflow_file_path())
+    
+    # Test defaults
+    assert Config.agent_kind() == "codex"
+    assert Config.claude_code_command() == "claude"
+    assert Config.claude_code_model() == nil
+    assert Config.claude_code_turn_timeout_ms() == 3_600_000
+    assert Config.claude_code_max_tokens() == nil
+
+    # Test custom values
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_kind: "claude_code",
+      claude_code_command: "claude",
+      claude_code_model: "claude-3-5-sonnet-20241022",
+      claude_code_turn_timeout_ms: 1_800_000,
+      claude_code_max_tokens: 8192
+    )
+
+    assert Config.agent_kind() == "claude_code"
+    assert Config.claude_code_command() == "claude"
+    assert Config.claude_code_model() == "claude-3-5-sonnet-20241022"
+    assert Config.claude_code_turn_timeout_ms() == 1_800_000
+    assert Config.claude_code_max_tokens() == 8192
   end
 
   test "config resolves $VAR references for env-backed secret and path values" do
