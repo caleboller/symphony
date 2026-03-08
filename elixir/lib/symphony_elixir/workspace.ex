@@ -19,13 +19,78 @@ defmodule SymphonyElixir.Workspace do
 
       with :ok <- validate_workspace_path(workspace),
            {:ok, created?} <- ensure_workspace(workspace),
-           :ok <- maybe_run_after_create_hook(workspace, issue_context, created?) do
+           :ok <- maybe_run_after_create_hook(workspace, issue_context, created?),
+           :ok <- maybe_setup_dependency_branch(workspace, issue_or_identifier, created?) do
         {:ok, workspace}
       end
     rescue
       error in [ArgumentError, ErlangError, File.Error] ->
         Logger.error("Workspace creation failed #{issue_log_context(issue_context)} error=#{Exception.message(error)}")
         {:error, error}
+    end
+  end
+
+  defp maybe_setup_dependency_branch(_workspace, _issue, false), do: :ok
+
+  defp maybe_setup_dependency_branch(workspace, %{blocked_by: blocked_by, identifier: identifier}, true)
+       when is_list(blocked_by) and length(blocked_by) > 0 do
+    # Find the first blocker with a branch that isn't in a terminal state
+    terminal_states = Config.linear_terminal_states() |> MapSet.new(&String.downcase/1)
+
+    dep_branch =
+      blocked_by
+      |> Enum.find(fn dep ->
+        dep_state = String.downcase(dep[:state] || dep["state"] || "")
+        branch = dep[:branch_name] || dep["branch_name"]
+        branch != nil and branch != "" and dep_state not in terminal_states
+      end)
+      |> case do
+        nil -> nil
+        dep -> dep[:branch_name] || dep["branch_name"]
+      end
+
+    case dep_branch do
+      nil ->
+        Logger.info("All dependency branches merged or absent; using main #{issue_log_context(issue_context(identifier))}")
+        :ok
+
+      branch ->
+        setup_dependency_branch(workspace, branch, identifier)
+    end
+  end
+
+  defp maybe_setup_dependency_branch(_workspace, _issue, _created), do: :ok
+
+  defp setup_dependency_branch(workspace, dep_branch, _identifier) do
+    commands = """
+    git fetch origin #{dep_branch} && \
+    git checkout #{dep_branch}
+    """
+
+    Logger.info("Setting up dependency branch base=#{dep_branch} workspace=#{workspace}")
+
+    timeout_ms = Config.workspace_hooks()[:timeout_ms] || 120_000
+
+    task =
+      Task.async(fn ->
+        System.cmd("sh", ["-lc", commands], cd: workspace, stderr_to_stdout: true)
+      end)
+
+    case Task.yield(task, timeout_ms) do
+      {:ok, {_output, 0}} ->
+        Logger.info("Dependency branch setup complete base=#{dep_branch}")
+        :ok
+
+      {:ok, {output, status}} ->
+        sanitized = sanitize_hook_output_for_log(output)
+        Logger.warning("Dependency branch setup failed status=#{status} output=#{inspect(sanitized)}")
+        # Non-fatal: fall back to main branch
+        :ok
+
+      nil ->
+        Task.shutdown(task, :brutal_kill)
+        Logger.warning("Dependency branch setup timed out")
+        :ok
     end
   end
 
