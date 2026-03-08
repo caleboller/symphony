@@ -20,7 +20,7 @@ defmodule SymphonyElixir.Workspace do
       with :ok <- validate_workspace_path(workspace),
            {:ok, created?} <- ensure_workspace(workspace),
            :ok <- maybe_run_after_create_hook(workspace, issue_context, created?),
-           :ok <- maybe_setup_dependency_branch(workspace, issue_or_identifier, created?) do
+           :ok <- maybe_setup_dependency_branch(workspace, issue_or_identifier) do
         {:ok, workspace}
       end
     rescue
@@ -30,24 +30,21 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp maybe_setup_dependency_branch(_workspace, _issue, false), do: :ok
-
-  defp maybe_setup_dependency_branch(workspace, %{blocked_by: blocked_by, identifier: identifier}, true)
+  defp maybe_setup_dependency_branch(workspace, %{blocked_by: blocked_by, identifier: identifier} = _issue)
        when is_list(blocked_by) and length(blocked_by) > 0 do
+    Logger.info("Checking dependency branches for #{identifier} blocked_by=#{inspect(Enum.map(blocked_by, &(&1[:identifier])))} workspace=#{workspace}")
     # Find the first blocker with a branch that isn't in a terminal state
     terminal_states = Config.linear_terminal_states() |> MapSet.new(&String.downcase/1)
 
-    dep_branch =
+    dep =
       blocked_by
       |> Enum.find(fn dep ->
         dep_state = String.downcase(dep[:state] || dep["state"] || "")
-        branch = dep[:branch_name] || dep["branch_name"]
-        branch != nil and branch != "" and dep_state not in terminal_states
+        has_branch_or_pr = (dep[:branch_name] || dep["branch_name"] || dep[:pr_url] || dep["pr_url"]) != nil
+        has_branch_or_pr and dep_state not in terminal_states
       end)
-      |> case do
-        nil -> nil
-        dep -> dep[:branch_name] || dep["branch_name"]
-      end
+
+    dep_branch = resolve_dependency_branch(dep, workspace)
 
     case dep_branch do
       nil ->
@@ -59,11 +56,69 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp maybe_setup_dependency_branch(_workspace, _issue, _created), do: :ok
+  defp maybe_setup_dependency_branch(_workspace, _issue), do: :ok
+
+  defp resolve_dependency_branch(nil, _workspace), do: nil
+
+  defp resolve_dependency_branch(dep, workspace) do
+    branch = dep[:branch_name] || dep["branch_name"]
+    pr_url = dep[:pr_url] || dep["pr_url"]
+
+    # First try the Linear branch name
+    case try_fetch_branch(workspace, branch) do
+      :ok ->
+        branch
+
+      :error ->
+        # Linear's branchName is often auto-generated and doesn't match the actual branch.
+        # Fall back to extracting the real branch from the GitHub PR.
+        case extract_branch_from_pr(pr_url) do
+          nil ->
+            Logger.warning("Could not resolve dependency branch linear_branch=#{inspect(branch)} pr_url=#{inspect(pr_url)}")
+            nil
+
+          pr_branch ->
+            Logger.info("Resolved dependency branch from PR pr_branch=#{pr_branch} (linear_branch=#{inspect(branch)} was wrong)")
+            pr_branch
+        end
+    end
+  end
+
+  defp try_fetch_branch(_workspace, nil), do: :error
+  defp try_fetch_branch(_workspace, ""), do: :error
+
+  defp try_fetch_branch(workspace, branch) do
+    # Use refspec fetch to create a local branch (required for shallow clones)
+    case System.cmd("git", ["fetch", "origin", "#{branch}:#{branch}"], cd: workspace, stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      _ -> :error
+    end
+  end
+
+  defp extract_branch_from_pr(nil), do: nil
+
+  defp extract_branch_from_pr(pr_url) when is_binary(pr_url) do
+    # Extract owner/repo and PR number from URL like https://github.com/owner/repo/pull/42
+    case Regex.run(~r{github\.com/([^/]+/[^/]+)/pull/(\d+)}, pr_url) do
+      [_, repo, pr_number] ->
+        case System.cmd("gh", ["pr", "view", pr_number, "--repo", repo, "--json", "headRefName", "-q", ".headRefName"],
+               stderr_to_stdout: true) do
+          {branch, 0} ->
+            trimmed = String.trim(branch)
+            if trimmed != "", do: trimmed, else: nil
+
+          _ ->
+            nil
+        end
+
+      _ ->
+        nil
+    end
+  end
 
   defp setup_dependency_branch(workspace, dep_branch, _identifier) do
     commands = """
-    git fetch origin #{dep_branch} && \
+    git fetch origin #{dep_branch}:#{dep_branch} 2>/dev/null; \
     git checkout #{dep_branch}
     """
 
