@@ -32,27 +32,28 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
   @spec start_session(Path.t()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace) do
     with :ok <- validate_workspace_cwd(workspace),
-         {:ok, port} <- start_port(workspace) do
-      metadata = port_metadata(port)
+         {:ok, :claude_available} <- start_port(workspace) do
       expanded_workspace = Path.expand(workspace)
 
       {:ok,
        %{
-         port: port,
-         metadata: metadata,
+         port: nil,
+         metadata: %{},
          workspace: expanded_workspace
        }}
     end
   end
 
   @spec run_turn(session(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
-  def run_turn(%{port: port, metadata: metadata, workspace: workspace}, prompt, issue, opts \\ []) do
+  def run_turn(%{port: _port, metadata: _metadata, workspace: workspace}, prompt, issue, opts \\ []) do
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
 
     Logger.info("Claude Code session started for #{issue_context(issue)}")
 
-    # Send the prompt to Claude Code
-    send_prompt_to_port(port, prompt)
+    # Claude Code --print mode takes the prompt as a CLI argument, not stdin.
+    # We need to start a new port with the prompt baked into the args.
+    {:ok, port} = start_port_with_prompt(workspace, prompt)
+    metadata = port_metadata(port)
 
     emit_message(
       on_message,
@@ -95,9 +96,8 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
   end
 
   @spec stop_session(session()) :: :ok
-  def stop_session(%{port: port}) when is_port(port) do
-    stop_port(port)
-  end
+  def stop_session(%{port: port}) when is_port(port), do: stop_port(port)
+  def stop_session(_session), do: :ok
 
   defp validate_workspace_cwd(workspace) when is_binary(workspace) do
     workspace_path = Path.expand(workspace)
@@ -117,7 +117,19 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
     end
   end
 
-  defp start_port(workspace) do
+  defp start_port(_workspace) do
+    # Validate that claude is available; actual port is created in run_turn with prompt
+    executable = System.find_executable("claude")
+
+    if is_nil(executable) do
+      {:error, :claude_not_found}
+    else
+      {:ok, :claude_available}
+    end
+  end
+
+
+  defp start_port_with_prompt(workspace, prompt) do
     executable = System.find_executable("claude")
 
     if is_nil(executable) do
@@ -130,7 +142,7 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
             :binary,
             :exit_status,
             :stderr_to_stdout,
-            args: command_args(),
+            args: command_args(prompt),
             cd: String.to_charlist(workspace),
             line: @port_line_bytes
           ]
@@ -140,8 +152,7 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
     end
   end
 
-
-  defp command_args do
+  defp command_args(prompt) do
     model = Config.claude_code_model()
     max_tokens = Config.claude_code_max_tokens()
 
@@ -156,12 +167,8 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
     model_args = if model, do: [~c"--model", String.to_charlist(model)], else: []
     token_args = if max_tokens, do: [~c"--max-tokens", String.to_charlist(to_string(max_tokens))], else: []
 
-    # Note: prompt will be sent via stdin, not as CLI arg
-    base_args ++ model_args ++ token_args
-  end
-
-  defp send_prompt_to_port(port, prompt) do
-    Port.command(port, prompt <> "\n")
+    # Prompt is the final positional argument for --print mode
+    base_args ++ model_args ++ token_args ++ [String.to_charlist(prompt)]
   end
 
   defp port_metadata(port) when is_port(port) do
