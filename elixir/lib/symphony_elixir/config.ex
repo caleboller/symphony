@@ -40,6 +40,11 @@ defmodule SymphonyElixir.Config do
     }
   }
   @default_codex_thread_sandbox "workspace-write"
+  @default_agent_kind "codex"
+  @default_claude_code_command "claude"
+  @default_claude_code_model nil
+  @default_claude_code_turn_timeout_ms 3_600_000
+  @default_claude_code_max_tokens nil
   @default_observability_enabled true
   @default_observability_refresh_ms 1_000
   @default_observability_render_interval_ms 16
@@ -82,6 +87,7 @@ defmodule SymphonyElixir.Config do
                                type: :map,
                                default: %{},
                                keys: [
+                                 kind: [type: :string, default: @default_agent_kind],
                                  max_concurrent_agents: [
                                    type: :integer,
                                    default: @default_max_concurrent_agents
@@ -117,6 +123,19 @@ defmodule SymphonyElixir.Config do
                                    type: :integer,
                                    default: @default_codex_stall_timeout_ms
                                  ]
+                               ]
+                             ],
+                             claude_code: [
+                               type: :map,
+                               default: %{},
+                               keys: [
+                                 command: [type: :string, default: @default_claude_code_command],
+                                 model: [type: {:or, [:string, nil]}, default: @default_claude_code_model],
+                                 turn_timeout_ms: [
+                                   type: :integer,
+                                   default: @default_claude_code_turn_timeout_ms
+                                 ],
+                                 max_tokens: [type: {:or, [:integer, nil]}, default: @default_claude_code_max_tokens]
                                ]
                              ],
                              hooks: [
@@ -259,6 +278,11 @@ defmodule SymphonyElixir.Config do
     get_in(validated_workflow_options(), [:agent, :max_retry_backoff_ms])
   end
 
+  @spec agent_kind() :: String.t()
+  def agent_kind do
+    get_in(validated_workflow_options(), [:agent, :kind])
+  end
+
   @spec agent_max_turns() :: pos_integer()
   def agent_max_turns do
     get_in(validated_workflow_options(), [:agent, :max_turns])
@@ -317,6 +341,26 @@ defmodule SymphonyElixir.Config do
     validated_workflow_options()
     |> get_in([:codex, :stall_timeout_ms])
     |> max(0)
+  end
+
+  @spec claude_code_command() :: String.t()
+  def claude_code_command do
+    get_in(validated_workflow_options(), [:claude_code, :command])
+  end
+
+  @spec claude_code_model() :: String.t() | nil
+  def claude_code_model do
+    get_in(validated_workflow_options(), [:claude_code, :model])
+  end
+
+  @spec claude_code_turn_timeout_ms() :: pos_integer()
+  def claude_code_turn_timeout_ms do
+    get_in(validated_workflow_options(), [:claude_code, :turn_timeout_ms])
+  end
+
+  @spec claude_code_max_tokens() :: pos_integer() | nil
+  def claude_code_max_tokens do
+    get_in(validated_workflow_options(), [:claude_code, :max_tokens])
   end
 
   @spec workflow_prompt() :: String.t()
@@ -451,6 +495,7 @@ defmodule SymphonyElixir.Config do
       workspace: extract_workspace_options(section_map(config, "workspace")),
       agent: extract_agent_options(section_map(config, "agent")),
       codex: extract_codex_options(section_map(config, "codex")),
+      claude_code: extract_claude_code_options(section_map(config, "claude_code")),
       hooks: extract_hooks_options(section_map(config, "hooks")),
       observability: extract_observability_options(section_map(config, "observability")),
       server: extract_server_options(section_map(config, "server"))
@@ -479,6 +524,7 @@ defmodule SymphonyElixir.Config do
 
   defp extract_agent_options(section) do
     %{}
+    |> put_if_present(:kind, scalar_string_value(Map.get(section, "kind")))
     |> put_if_present(:max_concurrent_agents, integer_value(Map.get(section, "max_concurrent_agents")))
     |> put_if_present(:max_turns, positive_integer_value(Map.get(section, "max_turns")))
     |> put_if_present(:max_retry_backoff_ms, positive_integer_value(Map.get(section, "max_retry_backoff_ms")))
@@ -494,6 +540,14 @@ defmodule SymphonyElixir.Config do
     |> put_if_present(:turn_timeout_ms, integer_value(Map.get(section, "turn_timeout_ms")))
     |> put_if_present(:read_timeout_ms, integer_value(Map.get(section, "read_timeout_ms")))
     |> put_if_present(:stall_timeout_ms, integer_value(Map.get(section, "stall_timeout_ms")))
+  end
+
+  defp extract_claude_code_options(section) do
+    %{}
+    |> put_if_present(:command, command_value(Map.get(section, "command")))
+    |> put_if_present(:model, scalar_string_value(Map.get(section, "model")))
+    |> put_if_present(:turn_timeout_ms, integer_value(Map.get(section, "turn_timeout_ms")))
+    |> put_if_present(:max_tokens, positive_integer_value(Map.get(section, "max_tokens")))
   end
 
   defp extract_hooks_options(section) do

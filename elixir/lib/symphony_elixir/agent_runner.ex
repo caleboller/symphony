@@ -1,10 +1,11 @@
 defmodule SymphonyElixir.AgentRunner do
   @moduledoc """
-  Executes a single Linear issue in an isolated workspace with Codex.
+  Executes a single Linear issue in an isolated workspace with the configured agent (Codex or Claude Code).
   """
 
   require Logger
   alias SymphonyElixir.Codex.AppServer
+  alias SymphonyElixir.ClaudeCode.Runner
   alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
@@ -15,7 +16,7 @@ defmodule SymphonyElixir.AgentRunner do
       {:ok, workspace} ->
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue),
-               :ok <- run_codex_turns(workspace, issue, codex_update_recipient, opts) do
+               :ok <- run_agent_turns(workspace, issue, codex_update_recipient, opts) do
             :ok
           else
             {:error, reason} ->
@@ -32,19 +33,32 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp codex_message_handler(recipient, issue) do
+  defp agent_message_handler(recipient, issue) do
     fn message ->
-      send_codex_update(recipient, issue, message)
+      send_agent_update(recipient, issue, message)
     end
   end
 
-  defp send_codex_update(recipient, %Issue{id: issue_id}, message)
+  defp send_agent_update(recipient, %Issue{id: issue_id}, message)
        when is_binary(issue_id) and is_pid(recipient) do
     send(recipient, {:codex_worker_update, issue_id, message})
     :ok
   end
 
-  defp send_codex_update(_recipient, _issue, _message), do: :ok
+  defp send_agent_update(_recipient, _issue, _message), do: :ok
+
+  defp run_agent_turns(workspace, issue, agent_update_recipient, opts) do
+    case Config.agent_kind() do
+      "codex" ->
+        run_codex_turns(workspace, issue, agent_update_recipient, opts)
+
+      "claude_code" ->
+        run_claude_code_turns(workspace, issue, agent_update_recipient, opts)
+
+      kind ->
+        {:error, {:unsupported_agent_kind, kind}}
+    end
+  end
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts) do
     max_turns = Keyword.get(opts, :max_turns, Config.agent_max_turns())
@@ -59,6 +73,19 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
+  defp run_claude_code_turns(workspace, issue, claude_code_update_recipient, opts) do
+    max_turns = Keyword.get(opts, :max_turns, Config.agent_max_turns())
+    issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
+
+    with {:ok, session} <- Runner.start_session(workspace) do
+      try do
+        do_run_claude_code_turns(session, workspace, issue, claude_code_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+      after
+        Runner.stop_session(session)
+      end
+    end
+  end
+
   defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 
@@ -67,7 +94,7 @@ defmodule SymphonyElixir.AgentRunner do
              app_session,
              prompt,
              issue,
-             on_message: codex_message_handler(codex_update_recipient, issue)
+             on_message: agent_message_handler(codex_update_recipient, issue)
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
@@ -80,6 +107,47 @@ defmodule SymphonyElixir.AgentRunner do
             workspace,
             refreshed_issue,
             codex_update_recipient,
+            opts,
+            issue_state_fetcher,
+            turn_number + 1,
+            max_turns
+          )
+
+        {:continue, refreshed_issue} ->
+          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+
+          :ok
+
+        {:done, _refreshed_issue} ->
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp do_run_claude_code_turns(session, workspace, issue, claude_code_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+
+    with {:ok, turn_session} <-
+           Runner.run_turn(
+             session,
+             prompt,
+             issue,
+             on_message: agent_message_handler(claude_code_update_recipient, issue)
+           ) do
+      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+
+      case continue_with_issue?(issue, issue_state_fetcher) do
+        {:continue, refreshed_issue} when turn_number < max_turns ->
+          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+
+          do_run_claude_code_turns(
+            session,
+            workspace,
+            refreshed_issue,
+            claude_code_update_recipient,
             opts,
             issue_state_fetcher,
             turn_number + 1,
