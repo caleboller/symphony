@@ -173,6 +173,63 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   @spec graphql(String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  @doc """
+  Transition an issue to a new state by name.
+  Looks up the workflow state ID from the issue's team, then updates.
+  """
+  @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
+  def update_issue_state(issue_id, target_state_name) when is_binary(issue_id) and is_binary(target_state_name) do
+    # First, get the issue's team and find the target state ID
+    state_query = """
+    query IssueTeamStates($issueId: String!) {
+      issue(id: $issueId) {
+        team {
+          states {
+            nodes {
+              id
+              name
+            }
+          }
+        }
+      }
+    }
+    """
+
+    with {:ok, %{"data" => %{"issue" => %{"team" => %{"states" => %{"nodes" => states}}}}}} <-
+           graphql(state_query, %{"issueId" => issue_id}),
+         %{"id" => state_id} <-
+           Enum.find(states, fn s -> String.downcase(s["name"]) == String.downcase(target_state_name) end) do
+      # Now update the issue state
+      mutation = """
+      mutation UpdateIssueState($issueId: String!, $stateId: String!) {
+        issueUpdate(id: $issueId, input: { stateId: $stateId }) {
+          success
+        }
+      }
+      """
+
+      case graphql(mutation, %{"issueId" => issue_id, "stateId" => state_id}) do
+        {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}} ->
+          Logger.info("Transitioned issue #{issue_id} to #{target_state_name}")
+          :ok
+
+        {:ok, response} ->
+          Logger.warning("Failed to transition issue #{issue_id}: #{inspect(response)}")
+          {:error, :transition_failed}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      nil ->
+        Logger.warning("State '#{target_state_name}' not found for issue #{issue_id}")
+        {:error, :state_not_found}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   def graphql(query, variables \\ %{}, opts \\ [])
       when is_binary(query) and is_map(variables) and is_list(opts) do
     payload = build_graphql_payload(query, variables, Keyword.get(opts, :operation_name))

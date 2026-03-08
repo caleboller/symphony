@@ -616,6 +616,13 @@ defmodule SymphonyElixir.Orchestrator do
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)}")
 
+        # Transition issue to In Progress when first dispatched
+        if normalize_issue_state(issue.state) == "todo" do
+          Task.start(fn ->
+            Tracker.update_issue_state(issue.id, "In Progress")
+          end)
+        end
+
         running =
           Map.put(state.running, issue.id, %{
             pid: pid,
