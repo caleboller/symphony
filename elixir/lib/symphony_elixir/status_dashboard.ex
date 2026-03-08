@@ -605,6 +605,11 @@ defmodule SymphonyElixir.StatusDashboard do
         "codex/event/token_count" -> @ansi_yellow
         "codex/event/task_started" -> @ansi_green
         "turn_completed" -> @ansi_magenta
+        :turn_completed -> @ansi_magenta
+        :turn_failed -> @ansi_red
+        :usage_update -> @ansi_yellow
+        :stream_message -> @ansi_green
+        :session_started -> @ansi_green
         _ -> @ansi_blue
       end
 
@@ -1101,6 +1106,49 @@ defmodule SymphonyElixir.StatusDashboard do
     end
   end
 
+  # Claude Code stream events
+  defp humanize_codex_event(:usage_update, _message, payload) do
+    usage = map_value(payload, ["usage", :usage]) || payload
+
+    case format_usage_counts(usage) do
+      nil -> "token usage update"
+      usage_text -> "tokens: #{usage_text}"
+    end
+  end
+
+  defp humanize_codex_event(:stream_message, _message, payload) do
+    inner = map_value(payload, ["payload", :payload]) || payload
+    type = map_value(inner, ["type", :type])
+
+    case type do
+      "assistant" -> "assistant responding"
+      "tool_use" ->
+        tool = map_value(inner, ["tool", :tool, "name", :name])
+        if is_binary(tool), do: "tool call: #{tool}", else: "tool call"
+      "tool_result" -> "tool result received"
+      "text" -> "text output"
+      "system" -> "system message"
+      t when is_binary(t) -> t
+      _ -> "stream event"
+    end
+  end
+
+  defp humanize_codex_event(:turn_completed, _message, payload) do
+    inner = map_value(payload, ["payload", :payload]) || payload
+    usage = map_value(inner, ["usage", :usage])
+
+    case format_usage_counts(usage) do
+      nil -> "turn completed"
+      usage_text -> "turn completed (#{usage_text})"
+    end
+  end
+
+  defp humanize_codex_event(:turn_failed, _message, payload) do
+    inner = map_value(payload, ["payload", :payload]) || payload
+    error = map_value(inner, ["error", :error, "message", :message])
+    if is_binary(error), do: "turn failed: #{inline_text(error)}", else: "turn failed"
+  end
+
   defp humanize_codex_event(:turn_input_required, _message, _payload), do: "turn blocked: waiting for user input"
 
   defp humanize_codex_event(:approval_auto_approved, message, payload) do
@@ -1144,9 +1192,8 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp humanize_codex_event(:turn_ended_with_error, message, _payload), do: "turn ended with error: #{format_reason(message)}"
   defp humanize_codex_event(:startup_failed, message, _payload), do: "startup failed: #{format_reason(message)}"
-  defp humanize_codex_event(:turn_failed, _message, payload), do: humanize_codex_method("turn/failed", payload)
   defp humanize_codex_event(:turn_cancelled, _message, _payload), do: "turn cancelled"
-  defp humanize_codex_event(:malformed, _message, _payload), do: "malformed JSON event from codex"
+  defp humanize_codex_event(:malformed, _message, _payload), do: "malformed JSON event"
   defp humanize_codex_event(_event, _message, _payload), do: nil
 
   defp unwrap_codex_message_payload(%{} = message) do
