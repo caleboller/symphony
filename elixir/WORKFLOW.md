@@ -26,6 +26,7 @@ hooks:
   before_remove: |
     cd elixir && mise exec -- mix workspace.before_remove
 agent:
+  kind: codex  # or claude_code
   max_concurrent_agents: 10
   max_turns: 20
 codex:
@@ -34,6 +35,11 @@ codex:
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite
+# claude_code:
+#   command: claude
+#   model: claude-3-5-sonnet-20241022
+#   turn_timeout_ms: 3600000
+#   max_tokens: 8192
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`
@@ -59,6 +65,27 @@ Description:
 {{ issue.description }}
 {% else %}
 No description provided.
+{% endif %}
+
+{% if issue.blocked_by.size > 0 %}
+## Dependency Chain
+
+This ticket has dependencies. Check their status before branching:
+
+{% for dep in issue.blocked_by %}
+- **{{ dep.identifier }}** ({{ dep.state }}){% if dep.branch_name %} — branch: `{{ dep.branch_name }}`{% endif %}{% if dep.pr_url %} — PR: {{ dep.pr_url }}{% endif %}
+{% endfor %}
+
+### Stacked PR Workflow
+
+If a dependency has an **open PR with a branch that is not yet merged to main**:
+1. Use that dependency branch as your base instead of main: `git checkout {{ dep.branch_name }} && git pull origin {{ dep.branch_name }}`
+2. Create your feature branch from there (not from main)
+3. Open your PR **against the dependency branch**, not main
+4. This creates a stacked PR chain that merges top-down
+
+If a dependency is already merged to main (state is Done), branch from main as normal.
+If multiple dependencies exist, chain from the most recent/relevant one.
 {% endif %}
 
 Instructions:
@@ -98,7 +125,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - `linear`: interact with Linear.
 - `commit`: produce clean, logical commits during implementation.
 - `push`: keep remote branch current and publish updates.
-- `pull`: keep branch updated with latest `origin/main` before handoff.
+- `pull`: keep branch updated with latest base branch (dependency branch or `origin/main`) before handoff.
 - `land`: when ticket reaches `Merging`, explicitly open and follow `.codex/skills/land/SKILL.md`, which includes the `land` loop.
 
 ## Status map
@@ -127,7 +154,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
    - `Done` -> do nothing and shut down.
 4. Check whether a PR already exists for the current branch and whether it is closed.
    - If a branch PR exists and is `CLOSED` or `MERGED`, treat prior branch work as non-reusable for this run.
-   - Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
+   - Create a fresh branch from the appropriate base (dependency branch if available, otherwise `origin/main`) and restart execution flow as a new attempt.
 5. For `Todo` tickets, do startup sequencing in this exact order:
    - `update_issue(..., state: "In Progress")`
    - find/create `## Codex Workpad` bootstrap comment
@@ -158,7 +185,9 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
     - If the ticket description/comment context includes `Validation`, `Test Plan`, or `Testing` sections, copy those requirements into the workpad `Acceptance Criteria` and `Validation` sections as required checkboxes (no optional downgrade).
 7.  Run a principal-style self-review of the plan and refine it in the comment.
 8.  Before implementing, capture a concrete reproduction signal and record it in the workpad `Notes` section (command/output, screenshot, or deterministic UI behavior).
-9.  Run the `pull` skill to sync with latest `origin/main` before any code edits, then record the pull/sync result in the workpad `Notes`.
+9.  Run the `pull` skill to sync with the appropriate base branch before any code edits, then record the pull/sync result in the workpad `Notes`:
+    - If this issue has dependencies with open branches (see Dependency Chain above), sync with the dependency branch instead of `origin/main`.
+    - If no dependencies or all dependencies are merged to main, sync with `origin/main`.
     - Include a `pull skill evidence` note with:
       - merge source(s),
       - result (`clean` or `conflicts resolved`),
@@ -217,7 +246,7 @@ Use this only when completion is blocked by missing required tools or missing au
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `symphony` (add it if missing).
-9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
+9.  Merge latest base branch (dependency branch if applicable, otherwise `origin/main`) into your feature branch, resolve conflicts, and rerun checks.
 10. Update the workpad comment with final checklist status and validation notes.
     - Mark completed plan/acceptance/validation checklist items as checked.
     - Add final handoff notes (commit + validation summary) in the same workpad comment.
@@ -253,7 +282,7 @@ Use this only when completion is blocked by missing required tools or missing au
 2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
 3. Close the existing PR tied to the issue.
 4. Remove the existing `## Codex Workpad` comment from the issue.
-5. Create a fresh branch from `origin/main`.
+5. Create a fresh branch from the appropriate base (dependency branch if dependencies exist with open branches, otherwise `origin/main`).
 6. Start over from the normal kickoff flow:
    - If current issue state is `Todo`, move it to `In Progress`; otherwise keep the current state.
    - Create a new bootstrap `## Codex Workpad` comment.
@@ -272,7 +301,7 @@ Use this only when completion is blocked by missing required tools or missing au
 ## Guardrails
 
 - If the branch PR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
-- For closed/merged branch PRs, create a new branch from `origin/main` and restart from reproduction/planning as if starting fresh.
+- For closed/merged branch PRs, create a new branch from the appropriate base (dependency branch if dependencies exist with open branches, otherwise `origin/main`) and restart from reproduction/planning as if starting fresh.
 - If issue state is `Backlog`, do not modify it; wait for human to move to `Todo`.
 - Do not edit the issue body/description for planning or progress tracking.
 - Use exactly one persistent workpad comment (`## Codex Workpad`) per issue.
