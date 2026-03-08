@@ -50,8 +50,8 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
 
     Logger.info("Claude Code session started for #{issue_context(issue)}")
 
-    # Claude Code --print mode takes the prompt as a CLI argument, not stdin.
-    # We need to start a new port with the prompt baked into the args.
+    # Claude Code --print mode reads the prompt from stdin when no positional arg is given.
+    # We use a shell wrapper to pipe the prompt via stdin and close it cleanly.
     {:ok, port} = start_port_with_prompt(workspace, prompt)
     metadata = port_metadata(port)
 
@@ -135,16 +135,22 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
     if is_nil(executable) do
       {:error, :claude_not_found}
     else
+      # Write prompt to a temp file, then pipe it to claude via shell.
+      # This avoids ARG_MAX limits and stdin EOF issues with Erlang Ports.
+      prompt_file = Path.join(System.tmp_dir!(), "symphony_prompt_#{System.unique_integer([:positive])}.txt")
+      File.write!(prompt_file, prompt)
+
+      shell_cmd = "cat #{escape_shell_arg(prompt_file)} | #{executable} #{Enum.join(command_args_strings(), " ")} ; rm -f #{escape_shell_arg(prompt_file)}"
+
       port =
         Port.open(
-          {:spawn_executable, String.to_charlist(executable)},
+          {:spawn, shell_cmd},
           [
             :binary,
             :exit_status,
             :stderr_to_stdout,
-            args: command_args(prompt),
-            cd: String.to_charlist(workspace),
-            line: @port_line_bytes
+            {:cd, String.to_charlist(workspace)},
+            {:line, @port_line_bytes}
           ]
         )
 
@@ -152,23 +158,23 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
     end
   end
 
-  defp command_args(prompt) do
+  defp escape_shell_arg(arg), do: "'" <> String.replace(arg, "'", "'\\''") <> "'"
+
+  defp command_args_strings do
     model = Config.claude_code_model()
     max_tokens = Config.claude_code_max_tokens()
 
     base_args = [
-      ~c"--print",
-      ~c"--verbose",
-      ~c"--output-format",
-      ~c"stream-json",
-      ~c"--dangerously-skip-permissions"
+      "--print",
+      "--verbose",
+      "--output-format", "stream-json",
+      "--dangerously-skip-permissions"
     ]
 
-    model_args = if model, do: [~c"--model", String.to_charlist(model)], else: []
-    token_args = if max_tokens, do: [~c"--max-tokens", String.to_charlist(to_string(max_tokens))], else: []
+    model_args = if model, do: ["--model", model], else: []
+    token_args = if max_tokens, do: ["--max-tokens", to_string(max_tokens)], else: []
 
-    # Prompt is the final positional argument for --print mode
-    base_args ++ model_args ++ token_args ++ [String.to_charlist(prompt)]
+    base_args ++ model_args ++ token_args
   end
 
   defp port_metadata(port) when is_port(port) do
