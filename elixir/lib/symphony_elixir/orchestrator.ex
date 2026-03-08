@@ -538,7 +538,11 @@ defmodule SymphonyElixir.Orchestrator do
     normalize_issue_state(issue_state) == "todo" and
       Enum.any?(blockers, fn
         %{state: blocker_state} when is_binary(blocker_state) ->
-          !terminal_issue_state?(blocker_state, terminal_states)
+          # Allow dispatch when blocker is in a "code complete" state
+          # (Human Review, Merging) — the branch exists and can be stacked on.
+          # Only block when blocker is still in active development or unknown.
+          not (terminal_issue_state?(blocker_state, terminal_states) or
+                 stackable_blocker_state?(blocker_state))
 
         _ ->
           true
@@ -546,6 +550,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp todo_issue_blocked_by_non_terminal?(_issue, _terminal_states), do: false
+
+  @stackable_states MapSet.new(["human review", "merging"])
+
+  defp stackable_blocker_state?(state_name) when is_binary(state_name) do
+    MapSet.member?(@stackable_states, normalize_issue_state(state_name))
+  end
 
   defp terminal_issue_state?(state_name, terminal_states) when is_binary(state_name) do
     MapSet.member?(terminal_states, normalize_issue_state(state_name))
