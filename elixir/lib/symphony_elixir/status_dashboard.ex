@@ -359,7 +359,7 @@ defmodule SymphonyElixir.StatusDashboard do
              colorize("out #{format_count(codex_output_tokens)}", @ansi_yellow) <>
              colorize(" | ", @ansi_gray) <>
              colorize("total #{format_count(codex_total_tokens)}", @ansi_yellow),
-           colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
+           format_rate_limits_or_agent_info(rate_limits),
            project_link_lines,
            project_refresh_line,
            colorize("├─ Running", @ansi_bold),
@@ -921,6 +921,18 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp in_bucket?(timestamp, bucket_start, bucket_end, false),
     do: timestamp >= bucket_start and timestamp < bucket_end
+
+  defp format_rate_limits_or_agent_info(rate_limits) do
+    agent_kind = Config.agent_kind()
+
+    if agent_kind == "claude_code" do
+      colorize("│ Agent: ", @ansi_bold) <>
+        colorize("Claude Code", @ansi_cyan) <>
+        colorize(" (#{Config.claude_code_model() || "default"})", @ansi_gray)
+    else
+      colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits)
+    end
+  end
 
   defp format_rate_limits(nil), do: colorize("unavailable", @ansi_gray)
 

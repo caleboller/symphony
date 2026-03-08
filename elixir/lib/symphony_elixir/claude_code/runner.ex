@@ -237,6 +237,38 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
 
         {:error, {:turn_failed, payload}}
 
+      {:ok, %{"type" => "assistant", "message" => message} = payload} ->
+        # Assistant messages carry per-turn usage in message.usage
+        usage = Map.get(message, "usage", %{})
+        emit_message(
+          on_message,
+          :stream_message,
+          %{
+            payload: payload,
+            raw: payload_string
+          },
+          port |> port_metadata() |> Map.put(:usage, usage)
+        )
+
+        receive_loop(port, on_message, timeout_ms, "", workspace)
+
+      {:ok, %{"type" => "result"} = payload} ->
+        # Final result with total cost and cumulative usage
+        usage = Map.get(payload, "usage", %{})
+        cost = Map.get(payload, "total_cost_usd")
+        duration_ms = Map.get(payload, "duration_ms")
+        num_turns = Map.get(payload, "num_turns")
+
+        emit_turn_event(on_message, :turn_completed, payload, payload_string, port,
+          Map.merge(payload, %{
+            "usage" => usage,
+            "total_cost_usd" => cost,
+            "duration_ms" => duration_ms,
+            "num_turns" => num_turns
+          })
+        )
+        {:ok, :turn_completed}
+
       {:ok, %{"type" => "usage"} = payload} ->
         emit_message(
           on_message,
