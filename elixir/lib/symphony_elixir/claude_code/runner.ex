@@ -29,30 +29,46 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
     end
   end
 
-  @spec start_session(Path.t()) :: {:ok, session()} | {:error, term()}
-  def start_session(workspace) do
+  @spec start_session(Path.t(), map()) :: {:ok, session()} | {:error, term()}
+  def start_session(workspace, workspace_meta \\ %{}) do
     with :ok <- validate_workspace_cwd(workspace),
          {:ok, :claude_available} <- start_port(workspace) do
       expanded_workspace = Path.expand(workspace)
+
+      env = build_env(workspace_meta)
 
       {:ok,
        %{
          port: nil,
          metadata: %{},
-         workspace: expanded_workspace
+         workspace: expanded_workspace,
+         env: env
        }}
     end
   end
 
+  defp build_env(workspace_meta) do
+    base = %{}
+
+    base =
+      case Map.get(workspace_meta, :base_branch) do
+        nil -> base
+        branch -> Map.put(base, "SYMPHONY_BASE_BRANCH", branch)
+      end
+
+    base
+  end
+
   @spec run_turn(session(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
-  def run_turn(%{port: _port, metadata: _metadata, workspace: workspace}, prompt, issue, opts \\ []) do
+  def run_turn(%{port: _port, metadata: _metadata, workspace: workspace} = session, prompt, issue, opts \\ []) do
+    env = Map.get(session, :env, %{})
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
 
     Logger.info("Claude Code session started for #{issue_context(issue)}")
 
     # Claude Code --print mode reads the prompt from stdin when no positional arg is given.
     # We use a shell wrapper to pipe the prompt via stdin and close it cleanly.
-    {:ok, port} = start_port_with_prompt(workspace, prompt)
+    {:ok, port} = start_port_with_prompt(workspace, prompt, env)
     metadata = port_metadata(port)
 
     emit_message(
@@ -129,7 +145,7 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
   end
 
 
-  defp start_port_with_prompt(workspace, prompt) do
+  defp start_port_with_prompt(workspace, prompt, env) do
     executable = System.find_executable("claude")
 
     if is_nil(executable) do
@@ -142,6 +158,8 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
 
       shell_cmd = "cat #{escape_shell_arg(prompt_file)} | #{executable} #{Enum.join(command_args_strings(), " ")} ; rm -f #{escape_shell_arg(prompt_file)}"
 
+      env_list = Enum.map(env, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
+
       port =
         Port.open(
           {:spawn, shell_cmd},
@@ -150,6 +168,7 @@ defmodule SymphonyElixir.ClaudeCode.Runner do
             :exit_status,
             :stderr_to_stdout,
             {:cd, String.to_charlist(workspace)},
+            {:env, env_list},
             {:line, @port_line_bytes}
           ]
         )

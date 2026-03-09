@@ -13,8 +13,10 @@ defmodule SymphonyElixir.AgentRunner do
     Logger.info("Starting agent run for #{issue_context(issue)}")
 
     case Workspace.create_for_issue(issue) do
-      {:ok, workspace} ->
+      {:ok, workspace, workspace_meta} ->
         try do
+          opts = Keyword.put(opts, :workspace_meta, workspace_meta)
+
           with :ok <- Workspace.run_before_run_hook(workspace, issue),
                :ok <- run_agent_turns(workspace, issue, codex_update_recipient, opts) do
             :ok
@@ -76,8 +78,9 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_claude_code_turns(workspace, issue, claude_code_update_recipient, opts) do
     max_turns = Keyword.get(opts, :max_turns, Config.agent_max_turns())
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
+    workspace_meta = Keyword.get(opts, :workspace_meta, %{})
 
-    with {:ok, session} <- Runner.start_session(workspace) do
+    with {:ok, session} <- Runner.start_session(workspace, workspace_meta) do
       try do
         do_run_claude_code_turns(session, workspace, issue, claude_code_update_recipient, opts, issue_state_fetcher, 1, max_turns)
       after

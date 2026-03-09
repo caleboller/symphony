@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Workspace do
 
   @excluded_entries MapSet.new([".elixir_ls", "tmp"])
 
-  @spec create_for_issue(map() | String.t() | nil) :: {:ok, Path.t()} | {:error, term()}
+  @spec create_for_issue(map() | String.t() | nil) :: {:ok, Path.t()} | {:ok, Path.t(), map()} | {:error, term()}
   def create_for_issue(issue_or_identifier) do
     issue_context = issue_context(issue_or_identifier)
 
@@ -20,8 +20,8 @@ defmodule SymphonyElixir.Workspace do
       with :ok <- validate_workspace_path(workspace),
            {:ok, created?} <- ensure_workspace(workspace),
            :ok <- maybe_run_after_create_hook(workspace, issue_context, created?),
-           :ok <- maybe_setup_dependency_branch(workspace, issue_or_identifier) do
-        {:ok, workspace}
+           {:ok, workspace_meta} <- maybe_setup_dependency_branch(workspace, issue_or_identifier) do
+        {:ok, workspace, workspace_meta}
       end
     rescue
       error in [ArgumentError, ErlangError, File.Error] ->
@@ -49,14 +49,17 @@ defmodule SymphonyElixir.Workspace do
     case dep_branch do
       nil ->
         Logger.info("All dependency branches merged or absent; using main #{issue_log_context(issue_context(identifier))}")
-        :ok
+        {:ok, %{}}
 
       branch ->
-        setup_dependency_branch(workspace, branch, identifier)
+        case setup_dependency_branch(workspace, branch, identifier) do
+          :ok -> {:ok, %{base_branch: branch}}
+          error -> error
+        end
     end
   end
 
-  defp maybe_setup_dependency_branch(_workspace, _issue), do: :ok
+  defp maybe_setup_dependency_branch(_workspace, _issue), do: {:ok, %{}}
 
   defp resolve_dependency_branch(nil, _workspace), do: nil
 

@@ -28,7 +28,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         hook_after_create: "git clone --depth 1 #{template_repo} ."
       )
 
-      assert {:ok, workspace} = Workspace.create_for_issue("S-1")
+      assert {:ok, workspace, _meta} = Workspace.create_for_issue("S-1")
       assert File.exists?(Path.join(workspace, ".git"))
       assert File.read!(Path.join(workspace, "README.md")) == "hook clone\n"
       assert File.read!(Path.join([workspace, "keep", "file.txt"])) == "keep me"
@@ -46,8 +46,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
 
-    assert {:ok, first_workspace} = Workspace.create_for_issue("MT/Det")
-    assert {:ok, second_workspace} = Workspace.create_for_issue("MT/Det")
+    assert {:ok, first_workspace, _meta} = Workspace.create_for_issue("MT/Det")
+    assert {:ok, second_workspace, _meta} = Workspace.create_for_issue("MT/Det")
 
     assert first_workspace == second_workspace
     assert Path.basename(first_workspace) == "MT_Det"
@@ -66,7 +66,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         hook_after_create: "echo first > README.md"
       )
 
-      assert {:ok, first_workspace} = Workspace.create_for_issue("MT-REUSE")
+      assert {:ok, first_workspace, _meta} = Workspace.create_for_issue("MT-REUSE")
 
       File.write!(Path.join(first_workspace, "README.md"), "changed\n")
       File.write!(Path.join(first_workspace, "local-progress.txt"), "in progress\n")
@@ -77,7 +77,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       File.write!(Path.join([first_workspace, "_build", "artifact.txt"]), "compiled artifact\n")
       File.write!(Path.join([first_workspace, "tmp", "scratch.txt"]), "remove me\n")
 
-      assert {:ok, second_workspace} = Workspace.create_for_issue("MT-REUSE")
+      assert {:ok, second_workspace, _meta} = Workspace.create_for_issue("MT-REUSE")
       assert second_workspace == first_workspace
       assert File.read!(Path.join(second_workspace, "README.md")) == "changed\n"
       assert File.read!(Path.join(second_workspace, "local-progress.txt")) == "in progress\n"
@@ -103,7 +103,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
 
-      assert {:ok, workspace} = Workspace.create_for_issue("MT-STALE")
+      assert {:ok, workspace, _meta} = Workspace.create_for_issue("MT-STALE")
       assert workspace == stale_workspace
       assert File.dir?(workspace)
     after
@@ -207,7 +207,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       workspace = Path.join(workspace_root, "MT-608")
 
-      assert {:ok, ^workspace} = Workspace.create_for_issue("MT-608")
+      assert {:ok, ^workspace, _meta} = Workspace.create_for_issue("MT-608")
       assert File.dir?(workspace)
       assert {:ok, []} = File.ls(workspace)
     after
@@ -653,10 +653,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert Config.workspace_hooks().after_create =~ "echo after_create > after_create.log"
       assert Config.workspace_hooks().before_remove =~ "echo before_remove >"
 
-      assert {:ok, workspace} = Workspace.create_for_issue("MT-HOOKS")
+      assert {:ok, workspace, _meta} = Workspace.create_for_issue("MT-HOOKS")
       assert File.read!(Path.join(workspace, "after_create.log")) == "after_create\n"
 
-      assert {:ok, _workspace} = Workspace.create_for_issue("MT-HOOKS")
+      assert {:ok, _workspace, _meta} = Workspace.create_for_issue("MT-HOOKS")
       assert length(String.split(String.trim(File.read!(after_create_counter)), "\n")) == 1
 
       assert :ok = Workspace.remove_issue_workspaces("MT-HOOKS")
@@ -684,7 +684,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         hook_before_remove: "echo failure && exit 17"
       )
 
-      assert {:ok, workspace} = Workspace.create_for_issue("MT-HOOKS-FAIL")
+      assert {:ok, workspace, _meta} = Workspace.create_for_issue("MT-HOOKS-FAIL")
       assert :ok = Workspace.remove_issue_workspaces("MT-HOOKS-FAIL")
       refute File.exists?(workspace)
     after
@@ -709,7 +709,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         hook_before_remove: "i=0; while [ $i -lt 3000 ]; do printf a; i=$((i+1)); done; exit 17"
       )
 
-      assert {:ok, workspace} = Workspace.create_for_issue("MT-HOOKS-LARGE-FAIL")
+      assert {:ok, workspace, _meta} = Workspace.create_for_issue("MT-HOOKS-LARGE-FAIL")
       assert :ok = Workspace.remove_issue_workspaces("MT-HOOKS-LARGE-FAIL")
       refute File.exists?(workspace)
     after
@@ -746,7 +746,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         hook_before_remove: "sleep 1"
       )
 
-      assert {:ok, workspace} = Workspace.create_for_issue("MT-HOOKS-TIMEOUT")
+      assert {:ok, workspace, _meta} = Workspace.create_for_issue("MT-HOOKS-TIMEOUT")
       assert :ok = Workspace.remove_issue_workspaces("MT-HOOKS-TIMEOUT")
       refute File.exists?(workspace)
     after
